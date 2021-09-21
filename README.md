@@ -1,14 +1,4 @@
-# Welcome to your CDK TypeScript project!
+# ApiDestination DEMO
 
-This is a blank project for TypeScript development with CDK.
+This demo is demonstrating the API to eventbus directly and from eventbus calling any oauth2 endpoint directly. Also has sample code eventbus directly to log group.
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
-
-## Useful commands
-
- * `npm run build`   compile typescript to js
- * `npm run watch`   watch for changes and compile
- * `npm run test`    perform the jest unit tests
- * `cdk deploy`      deploy this stack to your default AWS account/region
- * `cdk diff`        compare deployed stack with current state
- * `cdk synth`       emits the synthesized CloudFormation template

@@ -1,0 +1,11 @@
+# for cdk
+export ENVIRONMENT=development
+export APPLICATION=experiment
+export VERSION=$(git rev-parse --short HEAD)
+export DEPLOYMENT_JOB=local
+export DEPLOYMENT=development
+export BUSINESS_FUNCTION=experiment
+export CREATED_BY="$(git config user.name)"
+export SERVICE="api-bridge"
+export STAGE="$(whoami)"
+export AWS_PROFILE=platform-test
