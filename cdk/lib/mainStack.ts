@@ -1,6 +1,7 @@
 import * as cdk from '@aws-cdk/core'
 import * as iam from '@aws-cdk/aws-iam'
 import * as sqs from '@aws-cdk/aws-sqs'
+import * as kms from '@aws-cdk/aws-kms'
 import * as events from '@aws-cdk/aws-events'
 import * as targets from '@aws-cdk/aws-events-targets'
 import * as apiw from '@aws-cdk/aws-apigatewayv2'
@@ -94,7 +95,7 @@ export class MainStack extends BaseStack {
     const poolClientSecret = describeUserPoolClient.getResponseField(
       'UserPoolClient.ClientSecret'
     )
-  
+
     const clientSecretParameter = new ssm.StringParameter(this, 'client-secret-parameter', {
       parameterName: `${stackName}-app-client-secret`,
       stringValue: poolClientSecret,
@@ -113,11 +114,55 @@ export class MainStack extends BaseStack {
       createDefaultStage: true,
     })
 
+    // A custom key usually is not necessary, because loggroup is always encryted on storage level.
+    // However, you the content contains high confidential data, it can prevent users in the same
+    // account to access it. Do remember setup resouce policy for the service to access it.
+    const key = new kms.Key(this, 'logging-key', {
+      keyUsage: kms.KeyUsage.ENCRYPT_DECRYPT,
+      keySpec: kms.KeySpec.SYMMETRIC_DEFAULT,
+      removalPolicy: cdk.RemovalPolicy.DESTROY, // for demo only
+    })
+
+    key.addAlias(`logging/${api.httpApiName}`)
+
+    // Default only onwer can use this key, however, in workplace situation, you would like iam to manage
+    // the access for other users as well.
+    key.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'Enable IAM User permissions',
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.AccountRootPrincipal()],
+      actions: ["kms:*"],
+      resources: ["*"]
+    }))
+
+    // Not using arn from the loggroup object because of cdk will consider circular dependency
+    key.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'Allow loggroup to use this key for encryption',
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ServicePrincipal(`logs.${this.region}.amazonaws.com`)],
+      actions: [
+        "kms:Encrypt*",
+        "kms:Decrypt*",
+        "kms:ReEncrypt*",
+        "kms:GenerateDataKey*",
+        "kms:Describe*"
+      ],
+      resources: ["*"],
+      conditions: {
+        'ArnEquals': {
+          'kms:EncryptionContext:aws:logs:arn': `arn:aws:logs:${this.region}:${this.account}:log-group:${stackName}-logging`
+        }
+      }
+    }))
+
     const loggingLogGroup = new logs.LogGroup(this, 'logging-loggroup', {
       logGroupName: `${stackName}-logging`,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      removalPolicy: cdk.RemovalPolicy.DESTROY, // for demo only
       retention: logs.RetentionDays.ONE_DAY,
+      encryptionKey: key
     })
+
+    loggingLogGroup.node.addDependency(key)
 
     const loggingTemplate = JSON.stringify({
       requestId: '$context.requestId',
@@ -192,7 +237,7 @@ export class MainStack extends BaseStack {
     })
 
     const eventsRoute = new apiw.CfnRoute(this, 'events-route', {
-      
+
       apiId: api.apiId,
       routeKey: `${apiw.HttpMethod.POST} /events`,
       target: `integrations/${eventbusIntegration.ref}`
@@ -237,7 +282,7 @@ export class MainStack extends BaseStack {
 
     const logGroup = new logs.LogGroup(this, 'logs', {
       logGroupName: `${stackName}-events`,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      removalPolicy: cdk.RemovalPolicy.DESTROY, // for demo only
       retention: logs.RetentionDays.ONE_DAY,
     });
 
@@ -265,6 +310,9 @@ export class MainStack extends BaseStack {
     // https://docs.aws.amazon.com/eventbridge/latest/APIReference/API_CreateConnectionOAuthClientRequestParameters.html
     // https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-events-connection.html
     // https://docs.aws.amazon.com/eventbridge/latest/APIReference/API_ConnectionBodyParameter.html
+    // The access token will be store in the secret manager with other connection parameters you have specified here.
+    // The secret name will be start with events!connection/[name-of-connection]/
+    // The access token won't renew automatically, however, when it receives 401, it will renew by then and retry the request
     const connection = new events.CfnConnection(this, 'api-connection', {
       authorizationType: 'OAUTH_CLIENT_CREDENTIALS',
       name: `${props.environment}-gentu-api`,
@@ -281,11 +329,13 @@ export class MainStack extends BaseStack {
             'BodyParameters': [
               {
                 'Key': 'grant_type',
-                'Value': 'client_credentials'
+                'Value': 'client_credentials',
+                'IsValueSecret': false
               },
               {
                 'Key': 'scope',
-                'Value': `${identifier}/${scopeName}`
+                'Value': `${identifier}/${scopeName}`,
+                'IsValueSecret': false
               }
             ]
           }
