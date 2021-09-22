@@ -113,53 +113,45 @@ export class MainStack extends BaseStack {
       createDefaultStage: true,
     })
 
-    const defaultStage = api.defaultStage?.node.defaultChild as apiw.CfnStage
-
     const loggingLogGroup = new logs.LogGroup(this, 'logging-loggroup', {
       logGroupName: `${stackName}-logging`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       retention: logs.RetentionDays.ONE_DAY,
     })
 
-    // Below is 2 way to enable access logging
+    const loggingTemplate = JSON.stringify({
+      requestId: '$context.requestId',
+      userAgent: '$context.identity.userAgent',
+      sourceIp: '$context.identity.sourceIp',
+      requestTime: '$context.requestTime',
+      requestTimeEpoch: '$context.requestTimeEpoch',
+      httpMethod: '$context.httpMethod',
+      path: '$context.path',
+      status: '$context.status',
+      protocol: '$context.protocol',
+      responseLength: '$context.responseLength',
+      domainName: '$context.domainName'
+    })
+
+    const defaultStage = api.defaultStage?.node.defaultChild as apiw.CfnStage
+
+    // Below is 3 way to enable access logging
+
     // Option 1: Generic overrides cloudformation template
     defaultStage.addPropertyOverride('AutoDeploy', true)
     defaultStage.addPropertyOverride('Description', 'Default stage')
     defaultStage.addPropertyOverride('AccessLogSettings', {
       'DestinationArn': loggingLogGroup.logGroupArn,
-      'Format': JSON.stringify({
-        requestId: '$context.requestId',
-        userAgent: '$context.identity.userAgent',
-        sourceIp: '$context.identity.sourceIp',
-        requestTime: '$context.requestTime',
-        requestTimeEpoch: '$context.requestTimeEpoch',
-        httpMethod: '$context.httpMethod',
-        path: '$context.path',
-        status: '$context.status',
-        protocol: '$context.protocol',
-        responseLength: '$context.responseLength',
-        domainName: '$context.domainName'
-      })
+      'Format': loggingTemplate,
     })
 
     // Option 2: CDK way to change values
+
     // defaultStage.autoDeploy = true
     // defaultStage.description = 'Default stage'
     // defaultStage.accessLogSettings = {
     //   destinationArn: loggingLogGroup.logGroupArn,
-    //   format: JSON.stringify({
-    //     requestId: '$context.requestId',
-    //     userAgent: '$context.identity.userAgent',
-    //     sourceIp: '$context.identity.sourceIp',
-    //     requestTime: '$context.requestTime',
-    //     requestTimeEpoch: '$context.requestTimeEpoch',
-    //     httpMethod: '$context.httpMethod',
-    //     path: '$context.path',
-    //     status: '$context.status',
-    //     protocol: '$context.protocol',
-    //     responseLength: '$context.responseLength',
-    //     domainName: '$context.domainName'
-    //   })
+    //   format: loggingTemplate 
     // }
 
     // Integrate to EventBus directly
