@@ -41,7 +41,7 @@ export class MainStack extends BaseStack {
     const resourceServer = new cognito.UserPoolResourceServer(this, 'resource-server', {
       identifier,
       userPool,
-      userPoolResourceServerName: props.stackName,
+      userPoolResourceServerName: stackName,
       scopes: [
         new cognito.ResourceServerScope({
           scopeName,
@@ -344,7 +344,7 @@ export class MainStack extends BaseStack {
     })
 
     const apiDestination = new events.CfnApiDestination(this, 'api-destination', {
-      name: `${props.stackName}-secure-api`,
+      name: `${stackName}-secure-api`,
       connectionArn: connection.attrArn,
       httpMethod: 'POST',
       invocationEndpoint: `${api.apiEndpoint}/authorized`,
