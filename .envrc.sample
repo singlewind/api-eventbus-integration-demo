@@ -6,6 +6,5 @@ export DEPLOYMENT_JOB=local
 export DEPLOYMENT=development
 export BUSINESS_FUNCTION=experiment
 export CREATED_BY="$(git config user.name)"
-export SERVICE="api-bridge"
+export SERVICE="api-eventbridge-demo"
 export STAGE="$(whoami)"
-export AWS_PROFILE=platform-test

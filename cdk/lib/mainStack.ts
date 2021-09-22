@@ -12,7 +12,7 @@ import { BaseStack, BaseStackProps } from './core/baseStack'
 
 export interface MainStackProps extends BaseStackProps {
   apiBasePath: string;
-  deploymentStage: string;
+  rateLimit: number;
 }
 
 export class MainStack extends BaseStack {
@@ -21,46 +21,51 @@ export class MainStack extends BaseStack {
 
     // UserPool, 
     const userPool = new cognito.UserPool(this, 'userpool', {
-      userPoolName: `${props.environment}-platform-eventbus`,
+      userPoolName: stackName,
+      removalPolicy: cdk.RemovalPolicy.DESTROY, // for demo only
     })
 
     const domain = new cognito.UserPoolDomain(this, 'userpool-domain', {
       userPool,
       cognitoDomain: {
-        domainPrefix: `${props.environment}-gentu-api`,
+        domainPrefix: stackName,
       }
     })
 
     const tokenEndpoint = `https://${domain.domainName}.auth.${this.region}.amazoncognito.com/oauth2/token`
 
+    const identifier = 'user'
+    const scopeName = 'secured'
     // App Client
     const resourceServer = new cognito.UserPoolResourceServer(this, 'resource-server', {
-      identifier: "gentu",
+      identifier,
       userPool,
-      userPoolResourceServerName: `${props.environment}-gentu`,
+      userPoolResourceServerName: props.stackName,
       scopes: [
         new cognito.ResourceServerScope({
-          scopeName: 'bulksync',
-          scopeDescription: 'Bulk sync gentu practice',
+          scopeName,
+          scopeDescription: 'Secured API',
         })
       ],
     })
 
     const poolClient = new cognito.UserPoolClient(this, 'client', {
-      userPoolClientName: `${props.environment}-eventbus-integration`,
+      userPoolClientName: `${stackName}-eventbus-integration`,
       userPool,
       generateSecret: true,
       oAuth: {
         flows: {
           clientCredentials: true,
         },
-        scopes: [cognito.OAuthScope.custom('gentu/bulksync')],
+        scopes: [cognito.OAuthScope.custom(`${identifier}/${scopeName}`)],
       }
     })
 
     poolClient.node.addDependency(resourceServer)
 
     // Getting ClientSecret
+    // https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_DescribeUserPoolClient.html
+    // https://docs.aws.amazon.com/cdk/api/latest/docs/custom-resources-readme.html
     const sdkCall: cr.AwsSdkCall = {
       region: this.region,
       service: 'CognitoIdentityServiceProvider',
@@ -76,8 +81,13 @@ export class MainStack extends BaseStack {
       resourceType: 'Custom::DescribeUserPoolClient',
       onCreate: sdkCall,
       onUpdate: sdkCall,
+      // policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
+      //   resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE
+      // })
       policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
-        resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE
+        resources: [
+          userPool.userPoolArn
+        ]
       })
     })
 
@@ -86,20 +96,71 @@ export class MainStack extends BaseStack {
     )
   
     const clientSecretParameter = new ssm.StringParameter(this, 'client-secret-parameter', {
-      parameterName: `${props.environment}-app-client-secret`,
+      parameterName: `${stackName}-app-client-secret`,
       stringValue: poolClientSecret,
     })
 
     // API
     const api = new apiw.HttpApi(this, 'api', {
-      apiName: `${stackName}-api`,
+      apiName: stackName,
+      corsPreflight: {
+        allowCredentials: false,
+        allowOrigins: ['*'],
+        allowHeaders: ['*'],
+        allowMethods: [apiw.CorsHttpMethod.POST],
+        exposeHeaders: ['*'],
+      },
+      createDefaultStage: true,
     })
 
-    const stage = new apiw.HttpStage(this, 'stage', {
-      httpApi: api,
-      stageName: props.deploymentStage,
-      autoDeploy: true,
+    const defaultStage = api.defaultStage?.node.defaultChild as apiw.CfnStage
+
+    const loggingLogGroup = new logs.LogGroup(this, 'logging-loggroup', {
+      logGroupName: `${stackName}-logging`,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      retention: logs.RetentionDays.ONE_DAY,
     })
+
+    // Below is 2 way to enable access logging
+    // Option 1: Generic overrides cloudformation template
+    defaultStage.addPropertyOverride('AutoDeploy', true)
+    defaultStage.addPropertyOverride('Description', 'Default stage')
+    defaultStage.addPropertyOverride('AccessLogSettings', {
+      'DestinationArn': loggingLogGroup.logGroupArn,
+      'Format': JSON.stringify({
+        requestId: '$context.requestId',
+        userAgent: '$context.identity.userAgent',
+        sourceIp: '$context.identity.sourceIp',
+        requestTime: '$context.requestTime',
+        requestTimeEpoch: '$context.requestTimeEpoch',
+        httpMethod: '$context.httpMethod',
+        path: '$context.path',
+        status: '$context.status',
+        protocol: '$context.protocol',
+        responseLength: '$context.responseLength',
+        domainName: '$context.domainName'
+      })
+    })
+
+    // Option 2: CDK way to change values
+    // defaultStage.autoDeploy = true
+    // defaultStage.description = 'Default stage'
+    // defaultStage.accessLogSettings = {
+    //   destinationArn: loggingLogGroup.logGroupArn,
+    //   format: JSON.stringify({
+    //     requestId: '$context.requestId',
+    //     userAgent: '$context.identity.userAgent',
+    //     sourceIp: '$context.identity.sourceIp',
+    //     requestTime: '$context.requestTime',
+    //     requestTimeEpoch: '$context.requestTimeEpoch',
+    //     httpMethod: '$context.httpMethod',
+    //     path: '$context.path',
+    //     status: '$context.status',
+    //     protocol: '$context.protocol',
+    //     responseLength: '$context.responseLength',
+    //     domainName: '$context.domainName'
+    //   })
+    // }
 
     // Integrate to EventBus directly
     const eventBus = new events.EventBus(this, 'events', {
@@ -107,11 +168,12 @@ export class MainStack extends BaseStack {
     })
 
     const integrationRole = new iam.Role(this, 'integration-role', {
-      roleName: `${stackName}-integration-role`,
+      roleName: `${stackName}-api-integration-role`,
       assumedBy: new iam.ServicePrincipal('apigateway.amazonaws.com'),
     })
 
     integrationRole.addToPolicy(new iam.PolicyStatement({
+      sid: 'eventbridge',
       effect: iam.Effect.ALLOW,
       actions: ['events:PutEvents'],
       resources: [
@@ -129,8 +191,8 @@ export class MainStack extends BaseStack {
       integrationSubtype: 'EventBridge-PutEvents',
       credentialsArn: integrationRole.roleArn,
       requestParameters: {
-        'Source': 'platform.admin.api',
-        'DetailType': 'au.com.geniesolutions.bulksync',
+        'Source': 'external',
+        'DetailType': 'api.request',
         'Detail': '$request.body',
         'EventBusName': eventBus.eventBusArn,
         'Resources': `arn:${this.partition}:apigateway:${this.region}:${this.account}:/apis/${api.apiId}`,
@@ -154,9 +216,9 @@ export class MainStack extends BaseStack {
       integrationSubtype: 'EventBridge-PutEvents',
       credentialsArn: integrationRole.roleArn,
       requestParameters: {
-        'Source': 'platform.eventbus',
-        'DetailType': 'au.com.geniesolutions.bulksync',
-        'Detail': '$request.body',
+        'Source': 'eventbus.forward',
+        'DetailType': 'api.request',
+        'Detail': '$request.body.detail',
         'EventBusName': eventBus.eventBusArn,
         'Resources': eventBus.eventBusArn,
       },
@@ -166,7 +228,7 @@ export class MainStack extends BaseStack {
     const authorizer = new apiw.HttpAuthorizer(this, 'jwt-authorizer', {
       httpApi: api,
       type: apiw.HttpAuthorizerType.JWT,
-      authorizerName: `${props.environment}-platform-admin`,
+      authorizerName: stackName,
       identitySource: ['$request.header.Authorization'],
       jwtIssuer: `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`,
       jwtAudience: [poolClient.userPoolClientId],
@@ -178,22 +240,26 @@ export class MainStack extends BaseStack {
       target: `integrations/${authorizedIntegration.ref}`,
       authorizationType: 'JWT',
       authorizerId: authorizer.authorizerId,
-      authorizationScopes: ['gentu/bulksync'],
+      authorizationScopes: [`${identifier}/${scopeName}`],
     })
 
     const logGroup = new logs.LogGroup(this, 'logs', {
       logGroupName: `${stackName}-events`,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      retention: logs.RetentionDays.ONE_DAY,
     });
 
-    const deadLetterQueue = new sqs.Queue(this, 'dlq')
+    const deadLetterQueue = new sqs.Queue(this, 'dlq', {
+      queueName: `${stackName}-dlq`,
+    })
 
     const logRule = new events.Rule(this, 'log-rule', {
-      ruleName: `${props.environment}-log-all-events`,
+      ruleName: `${stackName}-log-all-events`,
       eventBus,
       eventPattern: {
         source: [
-          'platform.admin.api',
-          'platform.eventbus'
+          'external',
+          'eventbus.forward'
         ],
       },
       targets: [
@@ -203,8 +269,10 @@ export class MainStack extends BaseStack {
       ]
     })
 
-
     // Forward the request via ApiDestination
+    // https://docs.aws.amazon.com/eventbridge/latest/APIReference/API_CreateConnectionOAuthClientRequestParameters.html
+    // https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-events-connection.html
+    // https://docs.aws.amazon.com/eventbridge/latest/APIReference/API_ConnectionBodyParameter.html
     const connection = new events.CfnConnection(this, 'api-connection', {
       authorizationType: 'OAUTH_CLIENT_CREDENTIALS',
       name: `${props.environment}-gentu-api`,
@@ -225,7 +293,7 @@ export class MainStack extends BaseStack {
               },
               {
                 'Key': 'scope',
-                'Value': 'gentu/bulksync'
+                'Value': `${identifier}/${scopeName}`
               }
             ]
           }
@@ -234,11 +302,12 @@ export class MainStack extends BaseStack {
     })
 
     const apiDestination = new events.CfnApiDestination(this, 'api-destination', {
-      name: `${props.environment}-api-destination`,
+      name: `${props.stackName}-secure-api`,
       connectionArn: connection.attrArn,
       httpMethod: 'POST',
       invocationEndpoint: `${api.apiEndpoint}/authorized`,
-      description: 'Calling Gentu API'
+      description: 'Calling Secure API',
+      invocationRateLimitPerSecond: props.rateLimit, // 1-300
     })
 
     const forwardRole = new iam.Role(this, 'forward-role', {
@@ -256,14 +325,14 @@ export class MainStack extends BaseStack {
 
     const forwardRule = new events.CfnRule(this, 'forward-rule', {
       eventBusName: eventBus.eventBusName,
-      name: `${props.environment}-bulk-sync`,
+      name: `${stackName}-forward`,
       eventPattern: {
         source: [
-          'platform.admin.api'
+          'external'
         ],
       },
       targets: [{
-        id: `${props.environment}-gentu-api`,
+        id: `${stackName}-forward-request`,
         arn: apiDestination.attrArn,
         roleArn: forwardRole.roleArn,
         deadLetterConfig: {

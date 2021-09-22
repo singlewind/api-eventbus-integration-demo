@@ -37,7 +37,6 @@ const commonProps = {
 
 const stackName = `${prefix}-${commonProps.service}`;
 const apiBasePath = environmentName === configFromEnv.stage ? configFromEnv.service : `${configFromEnv.stage}-${configFromEnv.service}`;
-const deploymentStage = environmentName === configFromEnv.stage ? environmentName : configFromEnv.stage;
 
 const app = new cdk.App();
 
@@ -55,5 +54,5 @@ const commonTags = {
 new MainStack(app, stackName, {
   ...commonProps,
   apiBasePath,
-  deploymentStage,
+  rateLimit: 300,
 });
